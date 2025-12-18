@@ -37,14 +37,14 @@ import net.floodlightcontroller.packet.Ethernet;
 import net.floodlightcontroller.routing.Link;
 import net.floodlightcontroller.util.MACAddress;
 
-public class L3Routing implements IFloodlightModule, IOFSwitchListener,
+public class L3Routing implements IFloodlightModule, IOFSwitchListener, 
 		ILinkDiscoveryListener, IDeviceListener, IL3Routing
 {
 	public static final String MODULE_NAME = L3Routing.class.getSimpleName();
-
+	
 	// Interface to the logging system
     private static Logger log = LoggerFactory.getLogger(MODULE_NAME);
-
+    
     // Interface to Floodlight core for interacting with connected switches
     private IFloodlightProviderService floodlightProv;
 
@@ -53,10 +53,10 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 
     // Interface to device manager service
     private IDeviceService deviceProv;
-
+    
     // Switch table in which rules should be installed
     private byte table;
-
+    
     // Map of hosts to devices
     private Map<IDevice,Host> knownHosts;
 
@@ -65,22 +65,22 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
      */
 	@Override
 	public void init(FloodlightModuleContext context)
-			throws FloodlightModuleException
+			throws FloodlightModuleException 
 	{
 		log.info(String.format("Initializing %s...", MODULE_NAME));
 		Map<String,String> config = context.getConfigParams(this);
         this.table = Byte.parseByte(config.get("table"));
-
+        
 		this.floodlightProv = context.getServiceImpl(
 				IFloodlightProviderService.class);
         this.linkDiscProv = context.getServiceImpl(ILinkDiscoveryService.class);
         this.deviceProv = context.getServiceImpl(IDeviceService.class);
-
+        
         this.knownHosts = new ConcurrentHashMap<IDevice,Host>();
-
+        
         /*********************************************************************/
         /* TODO: Initialize other class variables, if necessary              */
-
+        
         /*********************************************************************/
 	}
 
@@ -89,38 +89,38 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
      */
 	@Override
 	public void startUp(FloodlightModuleContext context)
-			throws FloodlightModuleException
+			throws FloodlightModuleException 
 	{
 		log.info(String.format("Starting %s...", MODULE_NAME));
 		this.floodlightProv.addOFSwitchListener(this);
 		this.linkDiscProv.addListener(this);
 		this.deviceProv.addListener(this);
-
+		
 		/*********************************************************************/
 		/* TODO: Perform other tasks, if necessary                           */
-
+		
 		/*********************************************************************/
 	}
-
+	
 	/**
 	 * Get the table in which this application installs rules.
 	 */
 	public byte getTable()
 	{ return this.table; }
-
+	
     /**
      * Get a list of all known hosts in the network.
      */
     private Collection<Host> getHosts()
     { return this.knownHosts.values(); }
-
+	
     /**
      * Get a map of all active switches in the network. Switch DPID is used as
      * the key.
      */
 	private Map<Long, IOFSwitch> getSwitches()
     { return floodlightProv.getAllSwitchMap(); }
-
+	
     /**
      * Get a list of all active links in the network.
      */
@@ -130,44 +130,60 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
     /**
      * Compute shortest paths using Bellman-Ford algorithm.
      * Returns a map from switch DPID to the output port to reach destSwitch.
+     * 
+     * IMPORTANT: Links are DIRECTED in Floodlight. Each physical bidirectional
+     * link appears as TWO separate Link objects (one for each direction).
+     * We only relax in the direction specified by the Link object.
      */
     private Map<Long, Integer> bellmanFord(long destSwitch)
     {
         Map<Long, IOFSwitch> switches = this.getSwitches();
         Collection<Link> links = this.getLinks();
-
+        
+        // Initialize distances
         Map<Long, Integer> distance = new HashMap<Long, Integer>();
         Map<Long, Integer> nextHopPort = new HashMap<Long, Integer>();
-
+        
         for (Long sw : switches.keySet()) {
             distance.put(sw, Integer.MAX_VALUE);
         }
         distance.put(destSwitch, 0);
-
+        
+        // Bellman-Ford: relax edges |V|-1 times
         int n = switches.size();
         for (int i = 0; i < n - 1; i++) {
             boolean changed = false;
             for (Link link : links) {
                 long src = link.getSrc();
                 long dst = link.getDst();
-
+                int srcPort = link.getSrcPort();
+                
+                // Skip if either switch is not in our switch map
                 if (!switches.containsKey(src) || !switches.containsKey(dst))
                     continue;
-
-                // Relax src -> dst
-                if (distance.get(dst) != Integer.MAX_VALUE &&
-                    distance.get(dst) + 1 < distance.get(src)) {
-                    distance.put(src, distance.get(dst) + 1);
-                    nextHopPort.put(src, link.getSrcPort());
-                    changed = true;
+                
+                // Relax edge: if we can reach dst (closer to destSwitch), 
+                // can we improve src's distance by going through dst?
+                // The link goes src --srcPort--> dst
+                // So from src, to get closer to destSwitch, we send out srcPort
+                if (distance.get(dst) != Integer.MAX_VALUE) {
+                    int newDist = distance.get(dst) + 1;
+                    if (newDist < distance.get(src)) {
+                        distance.put(src, newDist);
+                        nextHopPort.put(src, srcPort);
+                        changed = true;
+                    }
                 }
+                
+                // DO NOT relax reverse direction here!
+                // Floodlight provides the reverse link as a separate Link object.
             }
             if (!changed) break;
         }
-
+        
         return nextHopPort;
     }
-
+    
     /**
      * Install a forwarding rule for a host on a switch.
      */
@@ -176,14 +192,14 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
         OFMatch match = new OFMatch();
         match.setDataLayerType(Ethernet.TYPE_IPv4);
         match.setDataLayerDestination(MACAddress.valueOf(host.getMACAddress()).toBytes());
-
+        
         OFAction action = new OFActionOutput((short) outPort);
         OFInstruction instr = new OFInstructionApplyActions(Arrays.asList(action));
-
+        
         SwitchCommands.installRule(sw, this.table, SwitchCommands.DEFAULT_PRIORITY,
                 match, Arrays.asList(instr));
     }
-
+    
     /**
      * Remove forwarding rules for a host from a switch.
      */
@@ -192,35 +208,39 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
         OFMatch match = new OFMatch();
         match.setDataLayerType(Ethernet.TYPE_IPv4);
         match.setDataLayerDestination(MACAddress.valueOf(host.getMACAddress()).toBytes());
-
+        
         SwitchCommands.removeRules(sw, this.table, match);
     }
-
+    
     /**
      * Install rules on all switches to route to a host.
      */
     private void installRoutesForHost(Host host)
     {
         if (!host.isAttachedToSwitch()) return;
-
+        
         IOFSwitch hostSwitch = host.getSwitch();
         long hostSwitchId = hostSwitch.getId();
         int hostPort = host.getPort();
-
+        
+        // Compute shortest paths from all switches to the host's switch
         Map<Long, Integer> nextHops = bellmanFord(hostSwitchId);
-
+        
+        // Install rules on all switches
         for (Map.Entry<Long, IOFSwitch> entry : this.getSwitches().entrySet()) {
             long swId = entry.getKey();
             IOFSwitch sw = entry.getValue();
-
+            
             if (swId == hostSwitchId) {
+                // This is the switch the host is connected to - forward to host's port
                 installRule(sw, host, hostPort);
             } else if (nextHops.containsKey(swId)) {
+                // Forward to the next hop port determined by Bellman-Ford
                 installRule(sw, host, nextHops.get(swId));
             }
         }
     }
-
+    
     /**
      * Remove rules for a host from all switches.
      */
@@ -230,7 +250,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
             removeRule(sw, host);
         }
     }
-
+    
     /**
      * Recompute and reinstall routes for all hosts.
      */
@@ -249,7 +269,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
      * @param device information about the host
      */
 	@Override
-	public void deviceAdded(IDevice device)
+	public void deviceAdded(IDevice device) 
 	{
 		Host host = new Host(device, this.floodlightProv);
 		// We only care about a new host if we know its IP
@@ -257,14 +277,10 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		{
 			log.info(String.format("Host %s added", host.getName()));
 			this.knownHosts.put(device, host);
-
+			
 			/*****************************************************************/
 			/* TODO: Update routing: add rules to route to new host          */
-
-			// Guard against installing routes before inter-switch links are discovered
-			if (this.getSwitches().size() > 1 && this.getLinks().isEmpty())
-			{ return; }
-
+			
 			this.installRoutesForHost(host);
 			/*****************************************************************/
 		}
@@ -275,7 +291,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
      * @param device information about the host
      */
 	@Override
-	public void deviceRemoved(IDevice device)
+	public void deviceRemoved(IDevice device) 
 	{
 		Host host = this.knownHosts.get(device);
 		if (null == host)
@@ -283,13 +299,13 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			host = new Host(device, this.floodlightProv);
 			this.knownHosts.put(device, host);
 		}
-
-		log.info(String.format("Host %s is no longer attached to a switch",
+		
+		log.info(String.format("Host %s is no longer attached to a switch", 
 				host.getName()));
-
+		
 		/*********************************************************************/
 		/* TODO: Update routing: remove rules to route to host               */
-
+		
 		this.removeRoutesForHost(host);
 		/*********************************************************************/
 	}
@@ -299,7 +315,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
      * @param device information about the host
      */
 	@Override
-	public void deviceMoved(IDevice device)
+	public void deviceMoved(IDevice device) 
 	{
 		Host host = this.knownHosts.get(device);
 		if (null == host)
@@ -307,7 +323,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			host = new Host(device, this.floodlightProv);
 			this.knownHosts.put(device, host);
 		}
-
+		
 		if (!host.isAttachedToSwitch())
 		{
 			this.deviceRemoved(device);
@@ -315,31 +331,27 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		}
 		log.info(String.format("Host %s moved to s%d:%d", host.getName(),
 				host.getSwitch().getId(), host.getPort()));
-
+		
 		/*********************************************************************/
 		/* TODO: Update routing: change rules to route to host               */
-
+		
 		this.removeRoutesForHost(host);
 		this.installRoutesForHost(host);
 		/*********************************************************************/
 	}
-
+	
     /**
      * Event handler called when a switch joins the network.
      * @param DPID for the switch
      */
-	@Override
-	public void switchAdded(long switchId)
+	@Override		
+	public void switchAdded(long switchId) 
 	{
 		IOFSwitch sw = this.floodlightProv.getSwitch(switchId);
 		log.info(String.format("Switch s%d added", switchId));
-
+		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-
-		// Guard against recomputing routes before inter-switch links are discovered
-		if (this.getSwitches().size() > 1 && this.getLinks().isEmpty())
-		{ return; }
 
 		this.recomputeAllRoutes();
 		/*********************************************************************/
@@ -350,14 +362,14 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	 * @param DPID for the switch
 	 */
 	@Override
-	public void switchRemoved(long switchId)
+	public void switchRemoved(long switchId) 
 	{
 		IOFSwitch sw = this.floodlightProv.getSwitch(switchId);
 		log.info(String.format("Switch s%d removed", switchId));
-
+		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-
+		
 		this.recomputeAllRoutes();
 		/*********************************************************************/
 	}
@@ -367,7 +379,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	 * @param updateList information about the change in each link's state
 	 */
 	@Override
-	public void linkDiscoveryUpdate(List<LDUpdate> updateList)
+	public void linkDiscoveryUpdate(List<LDUpdate> updateList) 
 	{
 		for (LDUpdate update : updateList)
 		{
@@ -375,21 +387,21 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			// the link must be from a switch to a host
 			if (0 == update.getDst())
 			{
-				log.info(String.format("Link s%s:%d -> host updated",
+				log.info(String.format("Link s%s:%d -> host updated", 
 					update.getSrc(), update.getSrcPort()));
 			}
 			// Otherwise, the link is between two switches
 			else
 			{
-				log.info(String.format("Link s%s:%d -> %s:%d updated",
+				log.info(String.format("Link s%s:%d -> %s:%d updated", 
 					update.getSrc(), update.getSrcPort(),
 					update.getDst(), update.getDstPort()));
 			}
 		}
-
+		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-
+		
 		this.recomputeAllRoutes();
 		/*********************************************************************/
 	}
@@ -399,15 +411,15 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	 * @param update information about the change in link state
 	 */
 	@Override
-	public void linkDiscoveryUpdate(LDUpdate update)
+	public void linkDiscoveryUpdate(LDUpdate update) 
 	{ this.linkDiscoveryUpdate(Arrays.asList(update)); }
-
+	
 	/**
      * Event handler called when the IP address of a host changes.
      * @param device information about the host
      */
 	@Override
-	public void deviceIPV4AddrChanged(IDevice device)
+	public void deviceIPV4AddrChanged(IDevice device) 
 	{ this.deviceAdded(device); }
 
 	/**
@@ -415,15 +427,15 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
      * @param device information about the host
      */
 	@Override
-	public void deviceVlanChanged(IDevice device)
+	public void deviceVlanChanged(IDevice device) 
 	{ /* Nothing we need to do, since we're not using VLANs */ }
-
+	
 	/**
 	 * Event handler called when the controller becomes the master for a switch.
 	 * @param DPID for the switch
 	 */
 	@Override
-	public void switchActivated(long switchId)
+	public void switchActivated(long switchId) 
 	{ /* Nothing we need to do, since we're not switching controller roles */ }
 
 	/**
@@ -431,53 +443,78 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	 * @param DPID for the switch
 	 */
 	@Override
-	public void switchChanged(long switchId)
+	public void switchChanged(long switchId) 
 	{ /* Nothing we need to do */ }
-
+	
 	/**
 	 * Event handler called when a port on a switch goes up or down, or is
 	 * added or removed.
+	 * @param DPID for the switch
+	 * @param port the port on the switch whose status changed
+	 * @param type the type of status change (up, down, add, remove)
 	 */
 	@Override
 	public void switchPortChanged(long switchId, ImmutablePort port,
-			PortChangeType type)
+			PortChangeType type) 
 	{ /* Nothing we need to do, since we'll get a linkDiscoveryUpdate event */ }
 
+	/**
+	 * Gets a name for this module.
+	 * @return name for this module
+	 */
 	@Override
-	public String getName()
+	public String getName() 
 	{ return this.MODULE_NAME; }
 
+	/**
+	 * Check if events must be passed to another module before this module is
+	 * notified of the event.
+	 */
 	@Override
-	public boolean isCallbackOrderingPrereq(String type, String name)
+	public boolean isCallbackOrderingPrereq(String type, String name) 
 	{ return false; }
 
+	/**
+	 * Check if events must be passed to another module after this module has
+	 * been notified of the event.
+	 */
 	@Override
-	public boolean isCallbackOrderingPostreq(String type, String name)
+	public boolean isCallbackOrderingPostreq(String type, String name) 
 	{ return false; }
-
+	
+    /**
+     * Tell the module system which services we provide.
+     */
 	@Override
-	public Collection<Class<? extends IFloodlightService>> getModuleServices()
+	public Collection<Class<? extends IFloodlightService>> getModuleServices() 
 	{
 		Collection<Class<? extends IFloodlightService>> services =
 					new ArrayList<Class<? extends IFloodlightService>>();
 		services.add(IL3Routing.class);
-		return services;
+		return services; 
 	}
 
+	/**
+     * Tell the module system which services we implement.
+     */
 	@Override
-	public Map<Class<? extends IFloodlightService>, IFloodlightService>
-			getServiceImpls()
-	{
+	public Map<Class<? extends IFloodlightService>, IFloodlightService> 
+			getServiceImpls() 
+	{ 
         Map<Class<? extends IFloodlightService>, IFloodlightService> services =
-        			new HashMap<Class<? extends IFloodlightService>,
+        			new HashMap<Class<? extends IFloodlightService>, 
         					IFloodlightService>();
+        // We are the class that implements the service
         services.put(IL3Routing.class, this);
         return services;
 	}
 
+	/**
+     * Tell the module system which modules we depend on.
+     */
 	@Override
-	public Collection<Class<? extends IFloodlightService>>
-			getModuleDependencies()
+	public Collection<Class<? extends IFloodlightService>> 
+			getModuleDependencies() 
 	{
 		Collection<Class<? extends IFloodlightService >> modules =
 	            new ArrayList<Class<? extends IFloodlightService>>();
