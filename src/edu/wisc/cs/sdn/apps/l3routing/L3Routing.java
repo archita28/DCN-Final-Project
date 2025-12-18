@@ -161,15 +161,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
                     nextHopPort.put(src, link.getSrcPort());
                     changed = true;
                 }
-            
-                // Relax dst -> src (treat link as undirected)
-                if (distance.get(src) != Integer.MAX_VALUE &&
-                    distance.get(src) + 1 < distance.get(dst)) {
-                    distance.put(dst, distance.get(src) + 1);
-                    nextHopPort.put(dst, link.getDstPort());
-                    changed = true;
-                }
-}
+            }
             if (!changed) break;
         }
 
@@ -269,6 +261,10 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			/*****************************************************************/
 			/* TODO: Update routing: add rules to route to new host          */
 
+			// Guard against installing routes before inter-switch links are discovered
+			if (this.getSwitches().size() > 1 && this.getLinks().isEmpty())
+			{ return; }
+
 			this.installRoutesForHost(host);
 			/*****************************************************************/
 		}
@@ -340,6 +336,10 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
+
+		// Guard against recomputing routes before inter-switch links are discovered
+		if (this.getSwitches().size() > 1 && this.getLinks().isEmpty())
+		{ return; }
 
 		this.recomputeAllRoutes();
 		/*********************************************************************/
