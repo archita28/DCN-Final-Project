@@ -161,7 +161,15 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
                     nextHopPort.put(src, link.getSrcPort());
                     changed = true;
                 }
-            }
+            
+                // Relax dst -> src (treat link as undirected)
+                if (distance.get(src) != Integer.MAX_VALUE &&
+                    distance.get(src) + 1 < distance.get(dst)) {
+                    distance.put(dst, distance.get(src) + 1);
+                    nextHopPort.put(dst, link.getDstPort());
+                    changed = true;
+                }
+}
             if (!changed) break;
         }
 
