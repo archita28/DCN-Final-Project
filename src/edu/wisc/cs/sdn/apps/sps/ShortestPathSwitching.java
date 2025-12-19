@@ -71,17 +71,10 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 		Map<String,String> config = context.getConfigParams(this);
         this.table = Byte.parseByte(config.get("table"));
         
-		this.floodlightProv = context.getServiceImpl(
-				IFloodlightProviderService.class);
+		this.floodlightProv = context.getServiceImpl(IFloodlightProviderService.class);
         this.linkDiscProv = context.getServiceImpl(ILinkDiscoveryService.class);
         this.deviceProv = context.getServiceImpl(IDeviceService.class);
-        
         this.knownHosts = new ConcurrentHashMap<IDevice,Host>();
-        
-        /*********************************************************************/
-        /* TODO: Initialize other class variables, if necessary              */
-        
-        /*********************************************************************/
 	}
 
 	/**
@@ -95,11 +88,6 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 		this.floodlightProv.addOFSwitchListener(this);
 		this.linkDiscProv.addListener(this);
 		this.deviceProv.addListener(this);
-		
-		/*********************************************************************/
-		/* TODO: Perform other tasks, if necessary                           */
-		
-		/*********************************************************************/
 	}
 	
 	/**
@@ -128,28 +116,27 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
     { return linkDiscProv.getLinks().keySet(); }
 
     /**
-     * Compute shortest paths using Bellman-Ford algorithm.
-     * Returns a map from switch DPID to the output port to reach destSwitch.
+     * Bellman-Ford shortest path algorithm.
+     * Returns map of switch DPID -> output port to reach destSwitch.
      * 
-     * IMPORTANT: Links are DIRECTED in Floodlight. Each physical bidirectional
-     * link appears as TWO separate Link objects (one for each direction).
-     * We only relax in the direction specified by the Link object.
+     * Note: Floodlight represents each bidirectional link as two Link objects.
+     * We only relax in the direction the Link specifies (src -> dst via srcPort).
      */
     private Map<Long, Integer> bellmanFord(long destSwitch)
     {
         Map<Long, IOFSwitch> switches = this.getSwitches();
         Collection<Link> links = this.getLinks();
         
-        // Initialize distances
         Map<Long, Integer> distance = new HashMap<Long, Integer>();
         Map<Long, Integer> nextHopPort = new HashMap<Long, Integer>();
         
+        // Initialize all distances to infinity, destination to 0
         for (Long sw : switches.keySet()) {
             distance.put(sw, Integer.MAX_VALUE);
         }
         distance.put(destSwitch, 0);
         
-        // Bellman-Ford: relax edges |V|-1 times
+        // Relax edges |V|-1 times
         int n = switches.size();
         for (int i = 0; i < n - 1; i++) {
             boolean changed = false;
@@ -158,14 +145,10 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
                 long dst = link.getDst();
                 int srcPort = link.getSrcPort();
                 
-                // Skip if either switch is not in our switch map
                 if (!switches.containsKey(src) || !switches.containsKey(dst))
                     continue;
                 
-                // Relax edge: if we can reach dst (closer to destSwitch), 
-                // can we improve src's distance by going through dst?
-                // The link goes src --srcPort--> dst
-                // So from src, to get closer to destSwitch, we send out srcPort
+                // If dst is reachable, try to improve src's distance
                 if (distance.get(dst) != Integer.MAX_VALUE) {
                     int newDist = distance.get(dst) + 1;
                     if (newDist < distance.get(src)) {
@@ -174,9 +157,6 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
                         changed = true;
                     }
                 }
-                
-                // DO NOT relax reverse direction here!
-                // Floodlight provides the reverse link as a separate Link object.
             }
             if (!changed) break;
         }
@@ -232,10 +212,10 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
             IOFSwitch sw = entry.getValue();
             
             if (swId == hostSwitchId) {
-                // This is the switch the host is connected to - forward to host's port
+                // Host's switch - forward directly to host port
                 installRule(sw, host, hostPort);
             } else if (nextHops.containsKey(swId)) {
-                // Forward to the next hop port determined by Bellman-Ford
+                // Other switches - forward to next hop
                 installRule(sw, host, nextHops.get(swId));
             }
         }
@@ -272,17 +252,11 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 	public void deviceAdded(IDevice device) 
 	{
 		Host host = new Host(device, this.floodlightProv);
-		// We only care about a new host if we know its IP
 		if (host.getIPv4Address() != null)
 		{
 			log.info(String.format("Host %s added", host.getName()));
 			this.knownHosts.put(device, host);
-			
-			/*****************************************************************/
-			/* TODO: Update routing: add rules to route to new host          */
-			
 			this.installRoutesForHost(host);
-			/*****************************************************************/
 		}
 	}
 
@@ -300,14 +274,8 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 			this.knownHosts.put(device, host);
 		}
 		
-		log.info(String.format("Host %s is no longer attached to a switch", 
-				host.getName()));
-		
-		/*********************************************************************/
-		/* TODO: Update routing: remove rules to route to host               */
-		
+		log.info(String.format("Host %s is no longer attached to a switch", host.getName()));
 		this.removeRoutesForHost(host);
-		/*********************************************************************/
 	}
 
 	/**
@@ -332,65 +300,36 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 		log.info(String.format("Host %s moved to s%d:%d", host.getName(),
 				host.getSwitch().getId(), host.getPort()));
 		
-		/*********************************************************************/
-		/* TODO: Update routing: change rules to route to host               */
-		
 		this.removeRoutesForHost(host);
 		this.installRoutesForHost(host);
-		/*********************************************************************/
 	}
 	
-    /**
-     * Event handler called when a switch joins the network.
-     * @param DPID for the switch
-     */
 	@Override		
 	public void switchAdded(long switchId) 
 	{
 		IOFSwitch sw = this.floodlightProv.getSwitch(switchId);
 		log.info(String.format("Switch s%d added", switchId));
-		
-		/*********************************************************************/
-		/* TODO: Update routing: change routing rules for all hosts          */
-
 		this.recomputeAllRoutes();
-		/*********************************************************************/
 	}
 
-	/**
-	 * Event handler called when a switch leaves the network.
-	 * @param DPID for the switch
-	 */
 	@Override
 	public void switchRemoved(long switchId) 
 	{
 		IOFSwitch sw = this.floodlightProv.getSwitch(switchId);
 		log.info(String.format("Switch s%d removed", switchId));
-		
-		/*********************************************************************/
-		/* TODO: Update routing: change routing rules for all hosts          */
-		
 		this.recomputeAllRoutes();
-		/*********************************************************************/
 	}
 
-	/**
-	 * Event handler called when multiple links go up or down.
-	 * @param updateList information about the change in each link's state
-	 */
 	@Override
 	public void linkDiscoveryUpdate(List<LDUpdate> updateList) 
 	{
 		for (LDUpdate update : updateList)
 		{
-			// If we only know the switch & port for one end of the link, then
-			// the link must be from a switch to a host
 			if (0 == update.getDst())
 			{
 				log.info(String.format("Link s%s:%d -> host updated", 
 					update.getSrc(), update.getSrcPort()));
 			}
-			// Otherwise, the link is between two switches
 			else
 			{
 				log.info(String.format("Link s%s:%d -> %s:%d updated", 
@@ -398,12 +337,7 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 					update.getDst(), update.getDstPort()));
 			}
 		}
-		
-		/*********************************************************************/
-		/* TODO: Update routing: change routing rules for all hosts          */
-		
 		this.recomputeAllRoutes();
-		/*********************************************************************/
 	}
 
 	/**
@@ -428,35 +362,34 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
      */
 	@Override
 	public void deviceVlanChanged(IDevice device) 
-	{ /* Nothing we need to do, since we're not using VLANs */ }
+	{ }
 	
 	/**
 	 * Event handler called when the controller becomes the master for a switch.
-	 * @param DPID for the switch
+	 * @param switchId for the switch
 	 */
 	@Override
 	public void switchActivated(long switchId) 
-	{ /* Nothing we need to do, since we're not switching controller roles */ }
+	{ }
 
 	/**
 	 * Event handler called when some attribute of a switch changes.
-	 * @param DPID for the switch
+	 * @param switchId for the switch
 	 */
 	@Override
 	public void switchChanged(long switchId) 
-	{ /* Nothing we need to do */ }
+	{ }
 	
 	/**
 	 * Event handler called when a port on a switch goes up or down, or is
 	 * added or removed.
-	 * @param DPID for the switch
+	 * @param switchId for the switch
 	 * @param port the port on the switch whose status changed
 	 * @param type the type of status change (up, down, add, remove)
 	 */
 	@Override
-	public void switchPortChanged(long switchId, ImmutablePort port,
-			PortChangeType type) 
-	{ /* Nothing we need to do, since we'll get a linkDiscoveryUpdate event */ }
+	public void switchPortChanged(long switchId, ImmutablePort port, PortChangeType type) 
+	{ }
 
 	/**
 	 * Gets a name for this module.
@@ -498,13 +431,10 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
      * Tell the module system which services we implement.
      */
 	@Override
-	public Map<Class<? extends IFloodlightService>, IFloodlightService> 
-			getServiceImpls() 
+	public Map<Class<? extends IFloodlightService>, IFloodlightService> getServiceImpls() 
 	{ 
         Map<Class<? extends IFloodlightService>, IFloodlightService> services =
-        			new HashMap<Class<? extends IFloodlightService>, 
-        					IFloodlightService>();
-        // We are the class that implements the service
+        			new HashMap<Class<? extends IFloodlightService>, IFloodlightService>();
         services.put(InterfaceShortestPathSwitching.class, this);
         return services;
 	}
@@ -513,8 +443,7 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
      * Tell the module system which modules we depend on.
      */
 	@Override
-	public Collection<Class<? extends IFloodlightService>> 
-			getModuleDependencies() 
+	public Collection<Class<? extends IFloodlightService>> getModuleDependencies() 
 	{
 		Collection<Class<? extends IFloodlightService >> modules =
 	            new ArrayList<Class<? extends IFloodlightService>>();
